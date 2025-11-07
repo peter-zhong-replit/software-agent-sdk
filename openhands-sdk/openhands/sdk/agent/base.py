@@ -15,7 +15,13 @@ from openhands.sdk.llm import LLM
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
-from openhands.sdk.tool import BUILT_IN_TOOLS, Tool, ToolDefinition, resolve_tool
+from openhands.sdk.tool import (
+    BUILT_IN_TOOLS,
+    FinishTool,
+    Tool,
+    ToolDefinition,
+    resolve_tool,
+)
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 from openhands.sdk.utils.pydantic_diff import pretty_pydantic_diff
 
@@ -140,6 +146,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             }
         ],
     )
+    include_default_finish_tool: bool = Field(
+        default=True,
+        description="Whether to include the default finish tool.",
+    )
 
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
@@ -221,7 +231,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         # Always include built-in tools; not subject to filtering
         tools.extend(BUILT_IN_TOOLS)
-
+        if self.include_default_finish_tool:
+            tools.append(FinishTool)
         # Check tool types
         for tool in tools:
             if not isinstance(tool, ToolDefinition):

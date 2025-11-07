@@ -19,7 +19,7 @@ from openhands.sdk.tool.builtins.think import (
 )
 
 
-BUILT_IN_TOOLS = [FinishTool, ThinkTool]
+BUILT_IN_TOOLS = [ThinkTool]
 
 __all__ = [
     "BUILT_IN_TOOLS",
