@@ -6,7 +6,7 @@ description = "OpenHands Workspace - Docker and container-based workspace implem
 requires-python = ">=3.12"
 dependencies = [
     "openhands-sdk",
-    "pydantic>=2.11.7",
+    "pydantic==2.12.2",
 ]
 
 [build-system]

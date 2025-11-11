@@ -33,6 +33,27 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+class CostTracking(BaseModel):
+    max_cost: float = Field(
+        default=0.0, description="The maximum cost allowed for the agent."
+    )
+    cost_reminder: int | None = Field(
+        default=None,
+        description="For how many steps dow we to send percentage reminders about the current cost?",
+    )
+    leeway_percentage: float = Field(
+        default=0.0,
+        description="The leeway percentage to allow for the cost.",
+    )
+
+    def __str__(self) -> str:
+        return (
+            f"CostTracking(max_cost={self.max_cost}, "
+            f"cost_reminder={self.cost_reminder},"
+            f" leeway_percentage={self.leeway_percentage})"
+        )
+
+
 class AgentBase(DiscriminatedUnionMixin, ABC):
     """Abstract base class for agents.
     Agents are stateless and should be fully defined by their configuration.
@@ -149,6 +170,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     include_default_finish_tool: bool = Field(
         default=True,
         description="Whether to include the default finish tool.",
+    )
+    cost_tracking: CostTracking | None = Field(
+        default=None,
+        description="Optional cost tracking to use for the agent.",
+        examples=[{"max_cost": 1.0, "cost_reminder": None, "leeway_percentage": 0.1}],
     )
 
     # Runtime materialized tools; private and non-serializable
