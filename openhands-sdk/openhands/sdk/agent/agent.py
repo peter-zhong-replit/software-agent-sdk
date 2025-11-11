@@ -137,6 +137,7 @@ class Agent(AgentBase):
         on_event: ConversationCallbackType,
     ) -> None:
         state = conversation.state
+
         # Check for pending actions (implicit confirmation)
         # and execute them before sampling new actions.
         pending_actions = ConversationState.get_unmatched_actions(state.events)
@@ -259,6 +260,52 @@ class Agent(AgentBase):
                 ]["token_ids"],
             )
             on_event(token_event)
+
+        if self.cost_tracking is not None:
+            accumulated_cost = state.stats.get_combined_metrics().accumulated_cost
+            cost_percentage = accumulated_cost / self.cost_tracking.max_cost
+            # Every time this llm is called the steps are counted
+            current_llm_steps = len(self.llm.metrics.costs)
+
+            logger.info("Cost tracking is enabled, %s", self.cost_tracking)
+            logger.info("Current cost percentage: %s. Current steps: %s", cost_percentage, current_llm_steps)
+            if accumulated_cost > self.cost_tracking.max_cost * (
+                1 + self.cost_tracking.leeway_percentage
+            ):
+                state.execution_status = ConversationExecutionStatus.FINISHED
+                logger.warning(
+                    f"Cost tracking: Cost exceeded max cost of "
+                    f"{self.cost_tracking.max_cost} by "
+                    f"{self.cost_tracking.leeway_percentage * 100}%"
+                )
+            if (
+                self.cost_tracking.cost_reminder is not None
+                and current_llm_steps % self.cost_tracking.cost_reminder == 0
+            ):
+                logger.warning(
+                    f"Cost tracking: Current cost is {accumulated_cost} and max cost is "
+                    f"{self.cost_tracking.max_cost} ({cost_percentage * 100}%)"
+                )
+                emphasis = ""
+                if cost_percentage > 0.95:
+                    emphasis = (
+                        "The budget is almost or has been exhausted. "
+                        "Consider finishing up the task."
+                    )
+
+                reminder_message = f"""
+<AUTOMATIC_UPDATE note="this is an auto generated message, no need to respond">
+The agent has spent {cost_percentage * 100}% of its budget. {emphasis}
+</AUTOMATIC_UPDATE>"""
+                on_event(
+                    MessageEvent(
+                        source="user",
+                        llm_message=Message(
+                            role="user",
+                            content=[TextContent(text=reminder_message)],
+                        ),
+                    )
+                )
 
     def _requires_user_confirmation(
         self, state: ConversationState, action_events: list[ActionEvent]
