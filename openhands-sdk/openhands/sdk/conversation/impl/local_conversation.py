@@ -309,6 +309,21 @@ class LocalConversation(BaseConversation):
                     self.agent.step(self, on_event=self._on_event)
                     iteration += 1
 
+                    if iteration % 10 == 0:
+                        reminder_message = f"""
+        <AUTOMATIC_UPDATE note="this is an auto generated message, no need to respond">
+        The agent has spent {iteration} iterations out of the allowed {self.max_iteration_per_run} iterations.
+        </AUTOMATIC_UPDATE>"""
+                        self._on_event(
+                            MessageEvent(
+                                source="user",
+                                llm_message=Message(
+                                    role="user",
+                                    content=[TextContent(text=reminder_message)],
+                                ),
+                            )
+                        )
+
                     # Check for non-finished terminal conditions
                     # Note: We intentionally do NOT check for FINISHED status here.
                     # This allows concurrent user messages to be processed:
