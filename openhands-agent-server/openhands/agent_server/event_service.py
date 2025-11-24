@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -14,8 +15,12 @@ from openhands.agent_server.utils import utc_now
 from openhands.sdk import LLM, Agent, Event, Message, get_logger
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.secret_registry import SecretValue
-from openhands.sdk.conversation.state import AgentExecutionStatus, ConversationState
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
 from openhands.sdk.utils.cipher import Cipher
@@ -81,10 +86,18 @@ class EventService:
         page_id: str | None = None,
         limit: int = 100,
         kind: str | None = None,
+        source: str | None = None,
+        body: str | None = None,
         sort_order: EventSortOrder = EventSortOrder.TIMESTAMP,
+        timestamp__gte: datetime | None = None,
+        timestamp__lt: datetime | None = None,
     ) -> EventPage:
         if not self._conversation:
             raise ValueError("inactive_service")
+
+        # Convert datetime to ISO string for comparison (ISO strings are comparable)
+        timestamp_gte_str = timestamp__gte.isoformat() if timestamp__gte else None
+        timestamp_lt_str = timestamp__lt.isoformat() if timestamp__lt else None
 
         # Collect all events
         all_events = []
@@ -97,6 +110,25 @@ class EventService:
                     != kind
                 ):
                     continue
+
+                # Apply source filter if provided
+                if source is not None and event.source != source:
+                    continue
+
+                # Apply body filter if provided (case-insensitive substring match)
+                if body is not None:
+                    if not self._event_matches_body(event, body):
+                        continue
+
+                # Apply timestamp filters if provided (ISO string comparison)
+                if (
+                    timestamp_gte_str is not None
+                    and event.timestamp < timestamp_gte_str
+                ):
+                    continue
+                if timestamp_lt_str is not None and event.timestamp >= timestamp_lt_str:
+                    continue
+
                 all_events.append(event)
 
         # Sort events based on sort_order
@@ -131,10 +163,18 @@ class EventService:
     async def count_events(
         self,
         kind: str | None = None,
+        source: str | None = None,
+        body: str | None = None,
+        timestamp__gte: datetime | None = None,
+        timestamp__lt: datetime | None = None,
     ) -> int:
         """Count events matching the given filters."""
         if not self._conversation:
             raise ValueError("inactive_service")
+
+        # Convert datetime to ISO string for comparison (ISO strings are comparable)
+        timestamp_gte_str = timestamp__gte.isoformat() if timestamp__gte else None
+        timestamp_lt_str = timestamp__lt.isoformat() if timestamp__lt else None
 
         count = 0
         with self._conversation._state as state:
@@ -146,16 +186,60 @@ class EventService:
                     != kind
                 ):
                     continue
+
+                # Apply source filter if provided
+                if source is not None and event.source != source:
+                    continue
+
+                # Apply body filter if provided (case-insensitive substring match)
+                if body is not None:
+                    if not self._event_matches_body(event, body):
+                        continue
+
+                # Apply timestamp filters if provided (ISO string comparison)
+                if (
+                    timestamp_gte_str is not None
+                    and event.timestamp < timestamp_gte_str
+                ):
+                    continue
+                if timestamp_lt_str is not None and event.timestamp >= timestamp_lt_str:
+                    continue
+
                 count += 1
 
         return count
 
+    def _event_matches_body(self, event: Event, body: str) -> bool:
+        """Check if event's message content matches body filter (case-insensitive)."""
+        # Import here to avoid circular imports
+        from openhands.sdk.event.llm_convertible.message import MessageEvent
+        from openhands.sdk.llm.message import content_to_str
+
+        # Only check MessageEvent instances for body content
+        if not isinstance(event, MessageEvent):
+            return False
+
+        # Extract text content from the message
+        text_parts = content_to_str(event.llm_message.content)
+
+        # Also check extended content if present
+        if event.extended_content:
+            extended_text_parts = content_to_str(event.extended_content)
+            text_parts.extend(extended_text_parts)
+
+        # Also check reasoning content if present
+        if event.reasoning_content:
+            text_parts.append(event.reasoning_content)
+
+        # Combine all text content and perform case-insensitive substring match
+        full_text = " ".join(text_parts).lower()
+        return body.lower() in full_text
+
     async def batch_get_events(self, event_ids: list[str]) -> list[Event | None]:
         """Given a list of ids, get events (Or none for any which were not found)"""
-        results = []
-        for event_id in event_ids:
-            result = await self.get_event(event_id)
-            results.append(result)
+        results = await asyncio.gather(
+            *[self.get_event(event_id) for event_id in event_ids]
+        )
         return results
 
     async def send_message(self, message: Message, run: bool = False):
@@ -165,7 +249,7 @@ class EventService:
         await loop.run_in_executor(None, self._conversation.send_message, message)
         if run:
             with self._conversation.state as state:
-                run = state.agent_status != AgentExecutionStatus.RUNNING
+                run = state.execution_status != ConversationExecutionStatus.RUNNING
         if run:
             loop.run_in_executor(None, self._conversation.run)
 
@@ -215,7 +299,7 @@ class EventService:
             ],
             max_iteration_per_run=self.stored.max_iterations,
             stuck_detection=self.stored.stuck_detection,
-            visualize=False,
+            visualizer=None,
             secrets=self.stored.secrets,
         )
 
@@ -235,6 +319,8 @@ class EventService:
             raise ValueError("inactive_service")
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.run)
+        # Publish state update after run completes to ensure stats are updated
+        await self._publish_state_update()
 
     async def respond_to_confirmation(self, request: ConfirmationResponseRequest):
         if request.accept:
@@ -246,6 +332,8 @@ class EventService:
         if self._conversation:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._conversation.pause)
+            # Publish state update after pause to ensure stats are updated
+            await self._publish_state_update()
 
     async def update_secrets(self, secrets: dict[str, SecretValue]):
         """Update secrets in the conversation."""
@@ -261,6 +349,17 @@ class EventService:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None, self._conversation.set_confirmation_policy, policy
+        )
+
+    async def set_security_analyzer(
+        self, security_analyzer: SecurityAnalyzerBase | None
+    ):
+        """Set the security analyzer for the conversation."""
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None, self._conversation.set_security_analyzer, security_analyzer
         )
 
     async def close(self):
@@ -322,3 +421,6 @@ class EventService:
     async def __aexit__(self, exc_type, exc_value, traceback):
         await self.save_meta()
         await self.close()
+
+    def is_open(self) -> bool:
+        return bool(self._conversation)
