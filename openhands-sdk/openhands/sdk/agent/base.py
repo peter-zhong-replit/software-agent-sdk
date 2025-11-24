@@ -249,7 +249,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 f"Filtered to {len(tools)} tools after applying regex filter: "
                 f"{[tool.name for tool in tools]}",
             )
-
+        built_in_tools = list[type[ToolDefinition]](BUILT_IN_TOOLS)
         # Always include built-in tools; not subject to filtering
         # Instantiate built-in tools using their .create() method
         for tool_class in BUILT_IN_TOOLS:
@@ -257,6 +257,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         if self.include_default_finish_tool:
             tools.extend(FinishTool.create(state))
+
         # Check tool types
         for tool in tools:
             if not isinstance(tool, ToolDefinition):
