@@ -298,7 +298,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         if self.include_default_finish_tool:
             built_in_tools.append(FinishTool)
 
-        for tool_class in BUILT_IN_TOOLS:
+        for tool_class in built_in_tools:
             tools.extend(tool_class.create(state))
 
         # Check tool types
