@@ -171,6 +171,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         default=True,
         description="Whether to include the default finish tool.",
     )
+    must_call_finish_tool: bool = Field(
+        default=False,
+        description="Whether to call the finish tool at the end of the conversation.",
+    )
     cost_tracking: CostTracking | None = Field(
         default=None,
         description="Optional cost tracking to use for the agent.",
