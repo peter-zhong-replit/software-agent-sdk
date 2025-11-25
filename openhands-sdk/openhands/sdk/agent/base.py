@@ -256,7 +256,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         built_in_tools = list[type[ToolDefinition]](BUILT_IN_TOOLS)
         # Always include built-in tools; not subject to filtering
         # Instantiate built-in tools using their .create() method
-        for tool_class in BUILT_IN_TOOLS:
+
+        for tool_class in built_in_tools:
             tools.extend(tool_class.create(state))
 
         if self.include_default_finish_tool:

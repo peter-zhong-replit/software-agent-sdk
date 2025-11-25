@@ -323,6 +323,8 @@ class LocalConversation(BaseConversation):
                                 ),
                             )
                         )
+                    if iteration >= self.max_iteration_per_run:
+                        logger.warning(f"Conversation run iteration {iteration} reached the max number of iterations {self.max_iteration_per_run}")
 
                     # Check for non-finished terminal conditions
                     # Note: We intentionally do NOT check for FINISHED status here.
