@@ -68,10 +68,10 @@ class LLMSummarizingCondenser(RollingCondenser):
         )
 
         messages = [Message(role="user", content=[TextContent(text=prompt)])]
-
+        print(f"LLM extra body: {self.llm.litellm_extra_body}")
         llm_response = self.llm.completion(
             messages=messages,
-            extra_body=self.llm.litellm_extra_body,
+            # extra_body=self.llm.litellm_extra_body,
         )
         # Extract summary from the LLMResponse message
         summary = None
