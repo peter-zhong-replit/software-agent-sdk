@@ -5,8 +5,11 @@ from pydantic import ValidationError, model_validator
 import openhands.sdk.security.analyzer as analyzer
 import openhands.sdk.security.risk as risk
 from openhands.sdk.agent.base import AgentBase
-from openhands.sdk.agent.utils import fix_malformed_tool_arguments
-from openhands.sdk.context.view import View
+from openhands.sdk.agent.utils import (
+    fix_malformed_tool_arguments,
+    make_llm_completion,
+    prepare_llm_messages,
+)
 from openhands.sdk.conversation import (
     ConversationCallbackType,
     ConversationState,
@@ -146,49 +149,27 @@ class Agent(AgentBase):
             self._execute_actions(conversation, pending_actions, on_event)
             return
 
-        # If a condenser is registered with the agent, we need to give it an
-        # opportunity to transform the events. This will either produce a list
-        # of events, exactly as expected, or a new condensation that needs to be
-        # processed before the agent can sample another action.
-        if self.condenser is not None:
-            view = View.from_events(state.events)
-            condensation_result = self.condenser.condense(view)
+        # Prepare LLM messages using the utility function
+        _messages_or_condensation = prepare_llm_messages(
+            state.events, condenser=self.condenser
+        )
 
-            match condensation_result:
-                case View():
-                    llm_convertible_events = condensation_result.events
+        # Process condensation event before agent sampels another action
+        if isinstance(_messages_or_condensation, Condensation):
+            on_event(_messages_or_condensation)
+            return
 
-                case Condensation():
-                    on_event(condensation_result)
-                    return None
+        _messages = _messages_or_condensation
 
-        else:
-            llm_convertible_events = [
-                e for e in state.events if isinstance(e, LLMConvertibleEvent)
-            ]
-
-        # Get LLM Response (Action)
-        _messages = LLMConvertibleEvent.events_to_messages(llm_convertible_events)
         logger.debug(
             "Sending messages to LLM: "
             f"{json.dumps([m.model_dump() for m in _messages[1:]], indent=2)}"
         )
 
         try:
-            if self.llm.uses_responses_api():
-                llm_response = self.llm.responses(
-                    messages=_messages,
-                    tools=list(self.tools_map.values()),
-                    include=None,
-                    store=False,
-                    add_security_risk_prediction=True,
-                )
-            else:
-                llm_response = self.llm.completion(
-                    messages=_messages,
-                    tools=list(self.tools_map.values()),
-                    add_security_risk_prediction=True,
-                )
+            llm_response = make_llm_completion(
+                self.llm, _messages, tools=list(self.tools_map.values())
+            )
         except FunctionCallValidationError as e:
             logger.warning(f"LLM generated malformed function call: {e}")
             error_message = MessageEvent(
@@ -347,6 +328,56 @@ The agent has spent {cost_percentage * 100}% of its budget. {emphasis}
                 ]["token_ids"],
             )
             on_event(token_event)
+
+        if self.cost_tracking is not None:
+            accumulated_cost = state.stats.get_combined_metrics().accumulated_cost
+            cost_percentage = accumulated_cost / self.cost_tracking.max_cost
+            # Every time this llm is called the steps are counted
+            current_llm_steps = len(self.llm.metrics.costs)
+
+            logger.info("Cost tracking is enabled, %s", self.cost_tracking)
+            logger.info(
+                "Current cost percentage: %s. Current steps: %s",
+                cost_percentage,
+                current_llm_steps,
+            )
+            if accumulated_cost > self.cost_tracking.max_cost * (
+                1 + self.cost_tracking.leeway_percentage
+            ):
+                state.execution_status = ConversationExecutionStatus.FINISHED
+                logger.warning(
+                    f"Cost tracking: Cost exceeded max cost of "
+                    f"{self.cost_tracking.max_cost} by "
+                    f"{self.cost_tracking.leeway_percentage * 100}%"
+                )
+            if (
+                self.cost_tracking.cost_reminder is not None
+                and current_llm_steps % self.cost_tracking.cost_reminder == 0
+            ):
+                logger.warning(
+                    f"Cost tracking: Current cost is {accumulated_cost} and max cost is "
+                    f"{self.cost_tracking.max_cost} ({cost_percentage * 100}%)"
+                )
+                emphasis = ""
+                if cost_percentage > 0.95:
+                    emphasis = (
+                        "The budget is almost or has been exhausted. "
+                        "Consider finishing up the task."
+                    )
+
+                reminder_message = f"""
+<AUTOMATIC_UPDATE note="this is an auto generated message, no need to respond">
+The agent has spent {cost_percentage * 100}% of its budget. {emphasis}
+</AUTOMATIC_UPDATE>"""
+                on_event(
+                    MessageEvent(
+                        source="user",
+                        llm_message=Message(
+                            role="user",
+                            content=[TextContent(text=reminder_message)],
+                        ),
+                    )
+                )
 
     def _requires_user_confirmation(
         self, state: ConversationState, action_events: list[ActionEvent]
