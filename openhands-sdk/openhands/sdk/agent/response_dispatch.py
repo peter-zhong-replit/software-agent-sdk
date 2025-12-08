@@ -234,7 +234,26 @@ class ResponseDispatchMixin:
         self._emit_message_event(message, llm_response, conversation, on_event)
         self._maybe_emit_vllm_tokens(llm_response, on_event)
         logger.debug("LLM produced a message response - awaits user input")
-        state.execution_status = ConversationExecutionStatus.FINISHED
+        if getattr(self, "must_call_finish_tool", False):
+            on_event(
+                MessageEvent(
+                    source="user",
+                    llm_message=Message(
+                        role="user",
+                        content=[
+                            TextContent(
+                                text=(
+                                    "You must call the finish tool "
+                                    "to end the conversation and mark the "
+                                    "completion of the task."
+                                )
+                            )
+                        ],
+                    ),
+                )
+            )
+        else:
+            state.execution_status = ConversationExecutionStatus.FINISHED
 
     def _handle_no_content_response(
         self,
