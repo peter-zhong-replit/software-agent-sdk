@@ -238,13 +238,32 @@ class Agent(AgentBase):
 
         else:
             logger.debug("LLM produced a message response - awaits user input")
-            state.execution_status = ConversationExecutionStatus.FINISHED
             msg_event = MessageEvent(
                 source="agent",
                 llm_message=message,
                 llm_response_id=llm_response.id,
             )
             on_event(msg_event)
+            if self.must_call_finish_tool:
+                on_event(
+                    MessageEvent(
+                        source="user",
+                        llm_message=Message(
+                            role="user",
+                            content=[
+                                TextContent(
+                                    text=(
+                                        "You must call the finish tool "
+                                        "to end the conversation and mark the "
+                                        "completion of the task."
+                                    )
+                                )
+                            ],
+                        ),
+                    )
+                )
+            else:
+                state.execution_status = ConversationExecutionStatus.FINISHED
 
         # If using VLLM, we can get the raw prompt and response tokens
         # that can be useful for RL training.
