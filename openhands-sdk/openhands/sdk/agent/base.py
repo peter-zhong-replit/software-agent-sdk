@@ -34,27 +34,6 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-class CostTracking(BaseModel):
-    max_cost: float = Field(
-        default=0.0, description="The maximum cost allowed for the agent."
-    )
-    cost_reminder: int | None = Field(
-        default=None,
-        description="For how many steps dow we to send percentage reminders about the current cost?",
-    )
-    leeway_percentage: float = Field(
-        default=0.0,
-        description="The leeway percentage to allow for the cost.",
-    )
-
-    def __str__(self) -> str:
-        return (
-            f"CostTracking(max_cost={self.max_cost}, "
-            f"cost_reminder={self.cost_reminder},"
-            f" leeway_percentage={self.leeway_percentage})"
-        )
-
-
 class AgentBase(DiscriminatedUnionMixin, ABC):
     """Abstract base class for OpenHands agents.
 
@@ -175,11 +154,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         default=False,
         description="Whether to call the finish tool at the end of the conversation.",
     )
-    cost_tracking: CostTracking | None = Field(
-        default=None,
-        description="Optional cost tracking to use for the agent.",
-        examples=[{"max_cost": 1.0, "cost_reminder": None, "leeway_percentage": 0.1}],
-    )
 
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
@@ -253,14 +227,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 f"Filtered to {len(tools)} tools after applying regex filter: "
                 f"{[tool.name for tool in tools]}",
             )
-        built_in_tools = list[type[ToolDefinition]](BUILT_IN_TOOLS)
+
         # Always include built-in tools; not subject to filtering
-        if self.include_default_finish_tool:
-            built_in_tools.append(FinishTool)
-
-        for tool_class in built_in_tools:
+        # Instantiate built-in tools using their .create() method
+        for tool_class in BUILT_IN_TOOLS:
             tools.extend(tool_class.create(state))
-
         if self.include_default_finish_tool:
             tools.extend(FinishTool.create(state))
 
