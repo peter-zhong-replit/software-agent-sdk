@@ -4,7 +4,6 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from openhands.sdk.agent.base import AgentBase
-from openhands.sdk.agent.utils import make_llm_completion, prepare_llm_messages
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.exceptions import ConversationRunError
@@ -15,12 +14,17 @@ from openhands.sdk.conversation.state import (
 )
 from openhands.sdk.conversation.stuck_detector import StuckDetector
 from openhands.sdk.conversation.title_utils import generate_conversation_title
-from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
+from openhands.sdk.conversation.types import (
+    ConversationCallbackType,
+    ConversationID,
+    ConversationTokenCallbackType,
+)
 from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
     DefaultConversationVisualizer,
 )
 from openhands.sdk.event import (
+    CondensationRequest,
     MessageEvent,
     PauseEvent,
     UserRejectObservation,
@@ -46,6 +50,7 @@ class LocalConversation(BaseConversation):
     _state: ConversationState
     _visualizer: ConversationVisualizerBase | None
     _on_event: ConversationCallbackType
+    _on_token: ConversationTokenCallbackType | None
     max_iteration_per_run: int
     _stuck_detector: StuckDetector | None
     llm_registry: LLMRegistry
@@ -58,6 +63,7 @@ class LocalConversation(BaseConversation):
         persistence_dir: str | Path | None = None,
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
+        token_callbacks: list[ConversationTokenCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
         visualizer: (
@@ -78,6 +84,7 @@ class LocalConversation(BaseConversation):
                       be used to identify the conversation. The user might want to
                       suffix their persistent filestore with this ID.
             callbacks: Optional list of callback functions to handle events
+            token_callbacks: Optional list of callbacks invoked for streaming deltas
             max_iteration_per_run: Maximum number of iterations per run
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
@@ -143,6 +150,12 @@ class LocalConversation(BaseConversation):
             self._visualizer = None
 
         self._on_event = BaseConversation.compose_callbacks(composed_list)
+        self._on_token = (
+            BaseConversation.compose_callbacks(token_callbacks)
+            if token_callbacks
+            else None
+        )
+
         self.max_iteration_per_run = max_iteration_per_run
 
         # Initialize stuck detector
@@ -305,8 +318,9 @@ class LocalConversation(BaseConversation):
                             ConversationExecutionStatus.RUNNING
                         )
 
-                    # step must mutate the SAME state object
-                    self.agent.step(self, on_event=self._on_event)
+                    self.agent.step(
+                        self, on_event=self._on_event, on_token=self._on_token
+                    )
                     iteration += 1
 
                     if iteration % 10 == 0:
@@ -455,7 +469,7 @@ class LocalConversation(BaseConversation):
                 executable_tool = tool.as_executable()
                 executable_tool.executor.close()
             except NotImplementedError:
-                # Tool has no executor, skip it
+                # Tool has no executor, skip it without erroring
                 continue
             except Exception as e:
                 logger.warning(f"Error closing executor for tool '{tool.name}': {e}")
@@ -475,6 +489,9 @@ class LocalConversation(BaseConversation):
         Returns:
             A string response from the agent
         """
+        # Import here to avoid circular imports
+        from openhands.sdk.agent.utils import make_llm_completion, prepare_llm_messages
+
         template_dir = (
             Path(__file__).parent.parent.parent / "context" / "prompts" / "templates"
         )
@@ -542,6 +559,55 @@ class LocalConversation(BaseConversation):
         return generate_conversation_title(
             events=self._state.events, llm=llm_to_use, max_length=max_length
         )
+
+    def condense(self) -> None:
+        """Synchronously force condense the conversation history.
+
+        If the agent is currently running, `condense()` will wait for the
+        ongoing step to finish before proceeding.
+
+        Raises ValueError if no compatible condenser exists.
+        """
+
+        # Check if condenser is configured and handles condensation requests
+        if (
+            self.agent.condenser is None
+            or not self.agent.condenser.handles_condensation_requests()
+        ):
+            condenser_info = (
+                "No condenser configured"
+                if self.agent.condenser is None
+                else (
+                    f"Condenser {type(self.agent.condenser).__name__} does not handle "
+                    "condensation requests"
+                )
+            )
+            raise ValueError(
+                f"Cannot condense conversation: {condenser_info}. "
+                "To enable manual condensation, configure an "
+                "LLMSummarizingCondenser:\n\n"
+                "from openhands.sdk.context.condenser import LLMSummarizingCondenser\n"
+                "agent = Agent(\n"
+                "    llm=your_llm,\n"
+                "    condenser=LLMSummarizingCondenser(\n"
+                "        llm=your_llm,\n"
+                "        max_size=120,\n"
+                "        keep_first=4\n"
+                "    )\n"
+                ")"
+            )
+
+        # Add a condensation request event
+        condensation_request = CondensationRequest()
+        self._on_event(condensation_request)
+
+        # Force the agent to take a single step to process the condensation request
+        # This will trigger the condenser if it handles condensation requests
+        with self._state:
+            # Take a single step to process the condensation request
+            self.agent.step(self, on_event=self._on_event, on_token=self._on_token)
+
+        logger.info("Condensation request processed")
 
     def __del__(self) -> None:
         """Ensure cleanup happens when conversation is destroyed."""

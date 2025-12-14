@@ -3,6 +3,7 @@ import re
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Generator, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
@@ -28,7 +29,10 @@ from openhands.sdk.utils.pydantic_diff import pretty_pydantic_diff
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation import ConversationState, LocalConversation
-    from openhands.sdk.conversation.types import ConversationCallbackType
+    from openhands.sdk.conversation.types import (
+        ConversationCallbackType,
+        ConversationTokenCallbackType,
+    )
 
 
 logger = get_logger(__name__)
@@ -209,13 +213,25 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             return
 
         tools: list[ToolDefinition] = []
-        for tool_spec in self.tools:
-            tools.extend(resolve_tool(tool_spec, state))
 
-        # Add MCP tools if configured
-        if self.mcp_config:
-            mcp_tools = create_mcp_tools(self.mcp_config, timeout=30)
-            tools.extend(mcp_tools)
+        # Use ThreadPoolExecutor to parallelize tool resolution
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = []
+
+            # Submit tool resolution tasks
+            for tool_spec in self.tools:
+                future = executor.submit(resolve_tool, tool_spec, state)
+                futures.append(future)
+
+            # Submit MCP tools creation if configured
+            if self.mcp_config:
+                future = executor.submit(create_mcp_tools, self.mcp_config, 30)
+                futures.append(future)
+
+            # Collect results as they complete
+            for future in futures:
+                result = future.result()
+                tools.extend(result)
 
         logger.info(
             f"Loaded {len(tools)} tools from spec: {[tool.name for tool in tools]}"
@@ -257,6 +273,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         self,
         conversation: "LocalConversation",
         on_event: "ConversationCallbackType",
+        on_token: "ConversationTokenCallbackType | None" = None,
     ) -> None:
         """Taking a step in the conversation.
 
@@ -267,6 +284,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             LLM calls (role="assistant") and tool results (role="tool")
         4.1 If conversation is finished, set state.execution_status to FINISHED
         4.2 Otherwise, just return, Conversation will kick off the next step
+
+        If the underlying LLM supports streaming, partial deltas are forwarded to
+        ``on_token`` before the full response is returned.
 
         NOTE: state will be mutated in-place.
         """
@@ -302,6 +322,12 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                     update={"llm": new_condenser_llm}
                 )
                 updates["condenser"] = new_condenser
+
+        # Reconcile agent_context - always use the current environment's agent_context
+        # This allows resuming conversations from different directories and handles
+        # cases where skills, working directory, or other context has changed
+        if self.agent_context is not None:
+            updates["agent_context"] = self.agent_context
 
         # Create maps by tool name for easy lookup
         runtime_tools_map = {tool.name: tool for tool in self.tools}
