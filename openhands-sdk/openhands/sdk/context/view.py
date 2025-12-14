@@ -180,6 +180,84 @@ class View(BaseModel):
             return True
 
     @staticmethod
+    def _find_safe_summary_offset(
+        events: list[LLMConvertibleEvent],
+        desired_offset: int,
+    ) -> int:
+        """Find a safe offset for inserting the summary that doesn't break
+        action-observation pairs.
+
+        The summary should not be inserted between:
+        1. Consecutive ActionEvents from the same LLM response batch
+        2. An ActionEvent and its corresponding ObservationEvent
+
+        This method adjusts the offset forward to find a safe insertion point.
+        """
+        if desired_offset >= len(events):
+            return len(events)
+
+        if desired_offset <= 0:
+            return 0
+
+        # Build a map of tool_call_id -> action index for matching
+        action_indices: dict[ToolCallID, int] = {}
+        for i, event in enumerate(events):
+            if isinstance(event, ActionEvent):
+                action_indices[event.tool_call_id] = i
+
+        # Check if the offset lands in an unsafe position and adjust forward
+        offset = desired_offset
+        while offset < len(events):
+            is_safe = True
+
+            # Check 1: Don't insert between consecutive actions from same batch
+            if offset > 0 and offset < len(events):
+                prev_event = events[offset - 1]
+                curr_event = events[offset]
+
+                # If previous is an action, check if current is also an action
+                # from the same LLM response
+                if isinstance(prev_event, ActionEvent) and isinstance(
+                    curr_event, ActionEvent
+                ):
+                    if prev_event.llm_response_id == curr_event.llm_response_id:
+                        is_safe = False
+                        logger.debug(
+                            f"Offset {offset} unsafe: between actions of same batch"
+                        )
+
+            # Check 2: Don't insert between an action and its observation
+            if is_safe and offset > 0:
+                prev_event = events[offset - 1]
+
+                # If previous event is an action, check if any observation
+                # for this action exists later in the list
+                if isinstance(prev_event, ActionEvent):
+                    action_tool_call_id = prev_event.tool_call_id
+                    # Look for matching observation after the offset
+                    for j in range(offset, len(events)):
+                        event = events[j]
+                        if (
+                            isinstance(event, ObservationBaseEvent)
+                            and event.tool_call_id == action_tool_call_id
+                        ):
+                            # Found observation for this action after offset
+                            # This means we'd be inserting between action and obs
+                            is_safe = False
+                            logger.debug(
+                                f"Offset {offset} unsafe: between action and "
+                                f"observation (tool_call_id={action_tool_call_id})"
+                            )
+                            break
+
+            if is_safe:
+                return offset
+
+            offset += 1
+
+        return len(events)
+
+    @staticmethod
     def from_events(events: Sequence[Event]) -> "View":
         """Create a view from a list of events, respecting the semantics of any
         condensation events.
@@ -221,10 +299,22 @@ class View(BaseModel):
                     break
 
         if summary is not None and summary_offset is not None:
-            logger.debug(f"Inserting summary at offset {summary_offset}")
+            # logger.debug(f"Inserting summary at offset {summary_offset}")
+            # Clamp summary_offset to valid range
+            summary_offset = min(summary_offset, len(kept_events))
+
+            # Adjust offset to avoid inserting between an action and its observation.
+            # Find a safe insertion point by ensuring we don't split action-observation pairs.
+            adjusted_offset = View._find_safe_summary_offset(kept_events, summary_offset)
+
+            logger.debug(
+                f"Inserting summary at offset {adjusted_offset} "
+                f"(original: {summary_offset})"
+            )
 
             _new_summary_event = CondensationSummaryEvent(summary=summary)
-            kept_events.insert(summary_offset, _new_summary_event)
+            # kept_events.insert(summary_offset, _new_summary_event)
+            kept_events.insert(adjusted_offset, _new_summary_event)
 
         # Check for an unhandled condensation request -- these are events closer to the
         # end of the list than any condensation action.
