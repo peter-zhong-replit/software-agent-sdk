@@ -3,6 +3,7 @@ import re
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Generator, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
@@ -14,6 +15,14 @@ from openhands.sdk.llm import LLM
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.tool import BUILT_IN_TOOLS, Tool, ToolDefinition, resolve_tool
+from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
+from openhands.sdk.tool import (
+    BUILT_IN_TOOLS,
+    FinishTool,
+    Tool,
+    ToolDefinition,
+    resolve_tool,
+)
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 from openhands.sdk.utils.pydantic_diff import pretty_pydantic_diff
 
@@ -141,6 +150,14 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             }
         ],
     )
+    include_default_finish_tool: bool = Field(
+        default=True,
+        description="Whether to include the default finish tool.",
+    )
+    must_call_finish_tool: bool = Field(
+        default=False,
+        description="Whether to call the finish tool at the end of the conversation.",
+    )
 
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
@@ -196,13 +213,25 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             return
 
         tools: list[ToolDefinition] = []
-        for tool_spec in self.tools:
-            tools.extend(resolve_tool(tool_spec, state))
 
-        # Add MCP tools if configured
-        if self.mcp_config:
-            mcp_tools = create_mcp_tools(self.mcp_config, timeout=30)
-            tools.extend(mcp_tools)
+        # Use ThreadPoolExecutor to parallelize tool resolution
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = []
+
+            # Submit tool resolution tasks
+            for tool_spec in self.tools:
+                future = executor.submit(resolve_tool, tool_spec, state)
+                futures.append(future)
+
+            # Submit MCP tools creation if configured
+            if self.mcp_config:
+                future = executor.submit(create_mcp_tools, self.mcp_config, 30)
+                futures.append(future)
+
+            # Collect results as they complete
+            for future in futures:
+                result = future.result()
+                tools.extend(result)
 
         logger.info(
             f"Loaded {len(tools)} tools from spec: {[tool.name for tool in tools]}"
@@ -219,6 +248,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         # Instantiate built-in tools using their .create() method
         for tool_class in BUILT_IN_TOOLS:
             tools.extend(tool_class.create(state))
+        if self.include_default_finish_tool:
+            tools.extend(FinishTool.create(state))
 
         # Check tool types
         for tool in tools:
@@ -291,6 +322,12 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                     update={"llm": new_condenser_llm}
                 )
                 updates["condenser"] = new_condenser
+
+        # Reconcile agent_context - always use the current environment's agent_context
+        # This allows resuming conversations from different directories and handles
+        # cases where skills, working directory, or other context has changed
+        if self.agent_context is not None:
+            updates["agent_context"] = self.agent_context
 
         # Create maps by tool name for easy lookup
         runtime_tools_map = {tool.name: tool for tool in self.tools}
