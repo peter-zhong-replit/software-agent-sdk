@@ -174,6 +174,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         ],
     )
 
+    must_call_finish_tool: bool = Field(
+        default=False,
+        description="Whether to call the finish tool at the end of the conversation.",
+    )
+
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
     _initialized: bool = PrivateAttr(default=False)

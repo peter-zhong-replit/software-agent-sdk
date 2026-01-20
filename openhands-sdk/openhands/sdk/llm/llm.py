@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import warnings
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
@@ -28,6 +29,7 @@ from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secr
 if TYPE_CHECKING:  # type hints only, avoid runtime import cycle
     from openhands.sdk.tool.tool import ToolDefinition
 
+count = 0
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore")
@@ -713,6 +715,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             retry_listener=self._retry_listener_fn,
         )
         def _one_attempt(**retry_kwargs) -> ResponsesAPIResponse:
+            global count
+            count += 1
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
             final_kwargs = {**call_kwargs, **retry_kwargs}
@@ -727,7 +731,26 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     if self.api_key:
                         assert isinstance(self.api_key, SecretStr)
                         api_key_value = self.api_key.get_secret_value()
-
+                        os.makedirs("/agent-traces", exist_ok=True)
+                        with open(f"/agent-traces/responses_{count}.json", "w") as f:
+                            json.dump(
+                                dict(
+                                    model=self.model,
+                                    input=typed_input,
+                                    instructions=instructions,
+                                    tools=resp_tools,
+                                    api_key=api_key_value,
+                                    api_base=self.base_url,
+                                    api_version=self.api_version,
+                                    timeout=self.timeout,
+                                    drop_params=self.drop_params,
+                                    seed=self.seed,
+                                    **final_kwargs,
+                                ),
+                                f,
+                                indent=2,
+                            )
+                    reasoning_override = {}
                     ret = litellm_responses(
                         model=self.model,
                         input=typed_input,
@@ -739,8 +762,31 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         timeout=self.timeout,
                         drop_params=self.drop_params,
                         seed=self.seed,
-                        **final_kwargs,
+                        **{**final_kwargs, **reasoning_override},
                     )
+                    with open(f"/agent-traces/responses_{count}.json", "w") as f:
+                        result_str = json.dumps(
+                            dict(
+                                model=self.model,
+                                input=typed_input,
+                                instructions=instructions,
+                                tools=resp_tools,
+                                api_key=api_key_value,
+                                api_base=self.base_url,
+                                api_version=self.api_version,
+                                timeout=self.timeout,
+                                drop_params=self.drop_params,
+                                seed=self.seed,
+                                **final_kwargs,
+                                ret=ret.model_dump(),
+                            ),
+                            indent=2,
+                        )
+                        pattern = (
+                            r'"image_url"\s*:\s*\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}\s*,?'
+                        )
+                        cleaned = re.sub(pattern, "", result_str)
+                        f.write(cleaned)
                     assert isinstance(ret, ResponsesAPIResponse), (
                         f"Expected ResponsesAPIResponse, got {type(ret)}"
                     )
@@ -785,6 +831,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         on_token: TokenCallbackType | None = None,
         **kwargs,
     ) -> ModelResponse:
+        global count
+        count += 1
+
         # litellm.modify_params is GLOBAL; guard it for thread-safety
         with self._litellm_modify_params_ctx(self.modify_params):
             with warnings.catch_warnings():
@@ -815,7 +864,23 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 if self.api_key:
                     assert isinstance(self.api_key, SecretStr)
                     api_key_value = self.api_key.get_secret_value()
-
+                os.makedirs("/agent-traces", exist_ok=True)
+                with open(f"/agent-traces/messages_{count}.json", "w") as f:
+                    json.dump(
+                        dict(
+                            model=self.model,
+                            api_key=api_key_value,
+                            api_base=self.base_url,
+                            api_version=self.api_version,
+                            timeout=self.timeout,
+                            drop_params=self.drop_params,
+                            seed=self.seed,
+                            messages=messages,
+                            **kwargs,
+                        ),
+                        f,
+                        indent=2,
+                    )
                 # Some providers need renames handled in _normalize_call_kwargs.
                 ret = litellm_completion(
                     model=self.model,
@@ -828,6 +893,26 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     messages=messages,
                     **kwargs,
                 )
+                with open(f"/agent-traces/messages_{count}.json", "w") as f:
+                    result_str = json.dumps(
+                        dict(
+                            model=self.model,
+                            api_key=api_key_value,
+                            api_base=self.base_url,
+                            api_version=self.api_version,
+                            timeout=self.timeout,
+                            drop_params=self.drop_params,
+                            seed=self.seed,
+                            messages=messages,
+                            **kwargs,
+                            ret=ret.model_dump(),
+                        ),
+                        indent=2,
+                    )
+                    pattern = r'"image_url"\s*:\s*\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}\s*,?'
+                    cleaned = re.sub(pattern, "", result_str)
+                    f.write(cleaned)
+
                 if enable_streaming and on_token is not None:
                     assert isinstance(ret, CustomStreamWrapper)
                     chunks = []

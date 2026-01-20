@@ -67,6 +67,12 @@ logger = get_logger(__name__)
 maybe_init_laminar()
 
 
+MUST_CALL_TOOL_MESSAGE = (
+    "You must call a tool to continue the task. If you are done, "
+    "call the finish tool to end the conversation and mark the completion of the task."
+)
+
+
 class Agent(AgentBase):
     """Main agent implementation for OpenHands.
 
@@ -277,6 +283,18 @@ class Agent(AgentBase):
         )
         on_event(msg_event)
 
+        # No tool calls - emit message event for reasoning or content responses
+        if not has_reasoning and not has_content and self.must_call_finish_tool:
+            on_event(
+                MessageEvent(
+                    source="user",
+                    llm_message=Message(
+                        role="user",
+                        content=[TextContent(text=MUST_CALL_TOOL_MESSAGE)],
+                    ),
+                )
+            )
+
         # Emit VLLM token ids if enabled
         self._maybe_emit_vllm_tokens(llm_response, on_event)
 
@@ -284,8 +302,25 @@ class Agent(AgentBase):
         # Continue if only reasoning without content (e.g., GPT-5 codex thinking)
         if has_content:
             logger.debug("LLM produced a message response - awaits user input")
-            state.execution_status = ConversationExecutionStatus.FINISHED
-            return
+            if self.must_call_finish_tool:
+                on_event(
+                    MessageEvent(
+                        source="user",
+                        llm_message=Message(
+                            role="user",
+                            content=[
+                                TextContent(
+                                    text=(
+                                        MUST_CALL_TOOL_MESSAGE
+                                    )
+                                )
+                            ],
+                        ),
+                    )
+                )
+            else:
+                state.execution_status = ConversationExecutionStatus.FINISHED
+                return
 
     def _requires_user_confirmation(
         self, state: ConversationState, action_events: list[ActionEvent]
