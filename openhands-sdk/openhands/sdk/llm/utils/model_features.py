@@ -182,6 +182,10 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
     "kimi-k2.6",
     "openrouter/minimax-m2",  # MiniMax-M2 via OpenRouter (interleaved thinking)
     "deepseek/deepseek-reasoner",
+    "fireworks_ai/glm-4p7",
+    "fireworks_ai/minimax-m2p1",
+    "fireworks_ai/deepseek-v3p2",
+    "fireworks_ai/kimi-k2p5",
 ]
 
 
