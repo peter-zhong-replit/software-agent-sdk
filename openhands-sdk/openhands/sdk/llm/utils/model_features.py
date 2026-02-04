@@ -186,6 +186,7 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
     "fireworks_ai/minimax-m2p1",
     "fireworks_ai/deepseek-v3p2",
     "fireworks_ai/kimi-k2p5",
+    "novita/moonshotai/kimi-k2.5",
 ]
 
 

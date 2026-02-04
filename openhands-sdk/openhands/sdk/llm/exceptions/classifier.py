@@ -90,3 +90,22 @@ def looks_like_auth_error(exception: Exception) -> bool:
         if code in s:
             return True
     return False
+
+
+RATE_LIMIT_PATTERNS: list[str] = [
+    "too many requests",
+    "too_many_requests",
+    "rate limit",
+    "ratelimit",
+    "status 429",
+    "http 429",
+    "429 too many requests",
+    "request didn't generate first token before the given deadline",
+]
+
+
+def looks_like_rate_limit(exception: Exception) -> bool:
+    if not isinstance(exception, (BadRequestError, OpenAIError)):
+        return False
+    s = str(exception).lower()
+    return any(p in s for p in RATE_LIMIT_PATTERNS)

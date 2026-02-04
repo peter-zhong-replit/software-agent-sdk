@@ -6,6 +6,7 @@ from tenacity import (
     retry,
     retry_if_exception_type,
     stop_after_attempt,
+    stop_never,
     wait_exponential,
 )
 
@@ -18,13 +19,16 @@ logger = get_logger(__name__)
 # Helpful alias for listener signature: (attempt_number, max_retries) -> None
 RetryListener = Callable[[int, int, BaseException | None], None]
 
+# Track exception types to only print full stack trace on first occurrence
+_seen_exception_types: dict[str, int] = {}
+
 
 class RetryMixin:
     """Mixin class for retry logic."""
 
     def retry_decorator(
         self,
-        num_retries: int = 5,
+        num_retries: int | None = 5,
         retry_exceptions: tuple[type[BaseException], ...] = (LLMNoResponseError,),
         retry_min_wait: int = 8,
         retry_max_wait: int = 64,
@@ -34,6 +38,8 @@ class RetryMixin:
         """
         Create a LLM retry decorator with customizable parameters.
         This is used for 429 errors, and a few other exceptions in LLM classes.
+        
+        If num_retries is None, retries will be infinite.
         """
 
         def before_sleep(retry_state: RetryCallState) -> None:
@@ -46,7 +52,7 @@ class RetryMixin:
                     if retry_state.outcome is not None
                     else None
                 )
-                retry_listener(retry_state.attempt_number, num_retries, exc)
+                retry_listener(retry_state.attempt_number, num_retries or 0, exc)
 
             # If there is no outcome or no exception, nothing to tweak.
             if retry_state.outcome is None:
@@ -72,9 +78,13 @@ class RetryMixin:
                             "keeping original temperature"
                         )
 
+        # Use infinite retries if num_retries is None
+        # stop_never is a stop condition object, not a function, so use it directly
+        stop_condition = stop_never if num_retries is None else stop_after_attempt(num_retries)
+        
         retry_decorator: Callable[[Callable[..., Any]], Callable[..., Any]] = retry(
             before_sleep=before_sleep,
-            stop=stop_after_attempt(num_retries),
+            stop=stop_condition,
             reraise=True,
             retry=retry_if_exception_type(retry_exceptions),
             wait=wait_exponential(
@@ -86,7 +96,7 @@ class RetryMixin:
         return retry_decorator
 
     def log_retry_attempt(self, retry_state: RetryCallState) -> None:
-        """Log retry attempts."""
+        """Log retry attempts with full stack trace only on first occurrence."""
 
         if retry_state.outcome is None:
             logger.error(
@@ -99,6 +109,17 @@ class RetryMixin:
         if exc is None:
             logger.error("retry_state.outcome.exception() returned None.")
             return
+
+        # Get exception type key for tracking
+        exc_type_name = type(exc).__name__
+        exc_module = type(exc).__module__
+        exc_key = f"{exc_module}.{exc_type_name}"
+        
+        # Track how many times we've seen this exception type
+        if exc_key not in _seen_exception_types:
+            _seen_exception_types[exc_key] = 0
+        _seen_exception_types[exc_key] += 1
+        count = _seen_exception_types[exc_key]
 
         # Try to get max attempts from the stop condition if present
         max_attempts: int | None = None
@@ -121,8 +142,20 @@ class RetryMixin:
         if max_attempts is not None:
             setattr(cast(Any, exc), "max_retries", max_attempts)
 
-        logger.error(
-            "%s. Attempt #%d | You can customize retry values in the configuration.",
-            exc,
-            retry_state.attempt_number,
-        )
+        if count == 1:
+            # First occurrence: keep full traceback at debug level.
+            logger.debug(
+                "[Attempt #%d] First occurrence of %s (full traceback below).",
+                retry_state.attempt_number,
+                exc_type_name,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+        else:
+            # Subsequent occurrences: log simple message
+            error_msg = str(exc)[:200]  # Truncate long messages
+            logger.error(
+                "[Attempt #%d] Similar exception occurred: %s - %s",
+                retry_state.attempt_number,
+                exc_type_name,
+                error_msg,
+            )
