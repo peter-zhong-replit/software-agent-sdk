@@ -176,6 +176,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             }
         ],
     )
+    must_call_finish_tool: bool = Field(
+        default=False,
+        description="Whether to call the finish tool at the end of the conversation.",
+    )
 
     critic: CriticBase | None = Field(
         default=None,

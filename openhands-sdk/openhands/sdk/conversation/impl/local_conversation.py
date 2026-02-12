@@ -94,7 +94,7 @@ class LocalConversation(BaseConversation):
         secrets: Mapping[str, SecretValue] | None = None,
         delete_on_close: bool = True,
         cipher: Cipher | None = None,
-        **_: object,
+        **kwargs: object,
     ):
         """Initialize the conversation.
 
@@ -135,6 +135,7 @@ class LocalConversation(BaseConversation):
                    (lost) on serialization.
         """
         super().__init__()  # Initialize with span tracking
+        self.should_send_reminder_message = kwargs.get("should_send_reminder_message", False)
         # Mark cleanup as initiated as early as possible to avoid races or partially
         # initialized instances during interpreter shutdown.
         self._cleanup_initiated = False
@@ -570,6 +571,7 @@ class LocalConversation(BaseConversation):
                         self, on_event=self._on_event, on_token=self._on_token
                     )
                     iteration += 1
+                    
 
                     # Check for non-finished terminal conditions
                     # Note: We intentionally do NOT check for FINISHED status here.
@@ -600,6 +602,24 @@ class LocalConversation(BaseConversation):
                             )
                         )
                         break
+                    if iteration % 10 == 0 and self.should_send_reminder_message:
+                        reminder_message = f"""
+    <AUTOMATIC_UPDATE note="this is an auto generated message, no need to respond">
+    The agent has spent {iteration} iterations out of the allowed {self.max_iteration_per_run} iterations.
+    </AUTOMATIC_UPDATE>"""
+                        self._on_event(
+                            MessageEvent(
+                                source="user",
+                                llm_message=Message(
+                                    role="user",
+                                    content=[TextContent(text=reminder_message)],
+                                ),
+                            )
+                        )
+                    if iteration >= self.max_iteration_per_run:
+                        logger.warning(
+                            f"Conversation run iteration {iteration} reached the max number of iterations {self.max_iteration_per_run}"
+                        )
         except Exception as e:
             self._state.execution_status = ConversationExecutionStatus.ERROR
 
