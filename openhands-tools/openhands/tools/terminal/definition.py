@@ -24,6 +24,7 @@ from openhands.sdk.tool import (
 from openhands.sdk.utils import maybe_truncate
 from openhands.tools.terminal.constants import (
     MAX_CMD_OUTPUT_SIZE,
+    MAX_TIMEOUT_SECONDS,
     NO_CHANGE_TIMEOUT_SECONDS,
 )
 from openhands.tools.terminal.metadata import CmdOutputMetadata
@@ -52,7 +53,7 @@ class TerminalAction(Action):
     timeout: float | None = Field(
         default=None,
         ge=0,
-        description=f"Optional. Sets a maximum time limit (in seconds) for running the command. If the command takes longer than this limit, you’ll be asked whether to continue or stop it. If you don’t set a value, the command will instead pause and ask for confirmation when it produces no new output for {NO_CHANGE_TIMEOUT_SECONDS} seconds. Use a higher value if the command is expected to take a long time (like installation or testing), or if it has a known fixed duration (like sleep).",  # noqa
+        description=f"Optional. Sets a maximum time limit (in seconds) for running the command. The value must be less than or equal to {MAX_TIMEOUT_SECONDS}. If the command takes longer than this limit, you’ll be asked whether to continue or stop it. If you don’t set a value, the command will instead pause and ask for confirmation when it produces no new output for {NO_CHANGE_TIMEOUT_SECONDS} seconds.",  # noqa
     )
     reset: bool = Field(
         default=False,
@@ -211,7 +212,7 @@ class TerminalObservation(Observation):
         return text
 
 
-TOOL_DESCRIPTION = """Execute a bash command in the terminal within a persistent shell session.
+TOOL_DESCRIPTION = f"""Execute a bash command in the terminal within a persistent shell session.
 
 
 ### Command Execution
@@ -222,7 +223,7 @@ TOOL_DESCRIPTION = """Execute a bash command in the terminal within a persistent
 
 ### Long-running Commands
 * For commands that may run indefinitely, run them in the background and redirect output to a file, e.g. `python3 app.py > server.log 2>&1 &`.
-* For commands that may run for a long time (e.g. installation or testing commands), or commands that run for a fixed amount of time (e.g. sleep), you should set the "timeout" parameter of your function call to an appropriate value.
+* For commands that may run for a long time (e.g. installation or testing commands), or commands that run for a fixed amount of time (e.g. sleep), you should set the "timeout" parameter of your function call to an appropriate value (maximum {MAX_TIMEOUT_SECONDS} seconds).
 * If a bash command returns exit code `-1`, this means the process hit the soft timeout and is not yet finished. By setting `is_input` to `true`, you can:
   - Send empty `command` to retrieve additional logs
   - Send text (set `command` to the text) to STDIN of the running process

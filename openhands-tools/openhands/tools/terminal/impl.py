@@ -10,7 +10,7 @@ from openhands.sdk.tool import ToolExecutor
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation import LocalConversation
-from openhands.tools.terminal.constants import CMD_OUTPUT_PS1_END
+from openhands.tools.terminal.constants import CMD_OUTPUT_PS1_END, MAX_TIMEOUT_SECONDS
 from openhands.tools.terminal.definition import (
     TerminalAction,
     TerminalObservation,
@@ -414,6 +414,17 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         action: TerminalAction,
         conversation: "LocalConversation | None" = None,
     ) -> TerminalObservation:
+        if action.timeout is not None and action.timeout > MAX_TIMEOUT_SECONDS:
+            return TerminalObservation.from_text(
+                text=(
+                    "Invalid timeout value. "
+                    f"Maximum allowed timeout is {MAX_TIMEOUT_SECONDS} seconds, "
+                    f"but got {action.timeout}."
+                ),
+                command=action.command,
+                is_error=True,
+            )
+
         if action.reset and action.is_input:
             raise ValueError("Cannot use reset=True with is_input=True")
 

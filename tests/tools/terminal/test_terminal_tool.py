@@ -14,6 +14,7 @@ from openhands.tools.terminal import (
     TerminalObservation,
     TerminalTool,
 )
+from openhands.tools.terminal.constants import MAX_TIMEOUT_SECONDS
 
 
 def _create_test_conv_state(temp_dir: str) -> ConversationState:
@@ -105,3 +106,25 @@ def test_bash_tool_to_openai_tool():
         assert openai_tool["function"]["name"] == "terminal"
         assert "description" in openai_tool["function"]
         assert "parameters" in openai_tool["function"]
+
+
+def test_bash_tool_rejects_timeout_over_limit():
+    """Test that TerminalTool returns an error for timeout values > limit."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        conv_state = _create_test_conv_state(temp_dir)
+        tools = TerminalTool.create(conv_state)
+        tool = tools[0]
+
+        action = TerminalAction(
+            command="echo 'should not run'",
+            timeout=float(MAX_TIMEOUT_SECONDS + 1),
+        )
+
+        result = tool(action)
+
+        assert result is not None
+        assert isinstance(result, TerminalObservation)
+        assert result.is_error is True
+        assert (
+            f"Maximum allowed timeout is {MAX_TIMEOUT_SECONDS} seconds" in result.text
+        )

@@ -30,6 +30,9 @@ TIMEOUT_MESSAGE_TEMPLATE: Final[str] = (
 # How long to wait with no new output before considering it a no-change timeout
 NO_CHANGE_TIMEOUT_SECONDS: Final[int] = 30
 
+# Maximum allowed hard timeout for a single terminal action in seconds.
+MAX_TIMEOUT_SECONDS = 180
+
 # How often to poll for new output in seconds
 POLL_INTERVAL: Final[float] = 0.5
 HISTORY_LIMIT: Final[int] = 10_000
