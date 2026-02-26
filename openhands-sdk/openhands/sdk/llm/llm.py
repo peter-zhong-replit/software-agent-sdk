@@ -912,6 +912,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         # Build instructions + input list using dedicated Responses formatter
         instructions, input_items = self.format_messages_for_responses(messages)
+        # Responses API does not send chat-format messages directly, so we build
+        # a chat-format view only for local token counting/logging parity.
+        messages_for_token_count = self.format_messages_for_llm(messages)
 
         # Convert Tool objects to Responses ToolParam
         # (Responses path always supports function tools)
@@ -956,6 +959,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             retry_listener=self._retry_listener_fn,
         )
         def _one_attempt(**retry_kwargs) -> ResponsesAPIResponse:
+            self._print_request_context_tokens(
+                messages=messages_for_token_count, llm_path="responses"
+            )
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
             final_kwargs = {**call_kwargs, **retry_kwargs}
@@ -1120,6 +1126,29 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         return api_key_value
 
+    def _print_request_context_tokens(
+        self, *, messages: list[dict[str, Any]], llm_path: str
+    ) -> None:
+        try:
+            context_tokens = int(
+                token_counter(
+                    model=self.model,
+                    messages=messages,
+                    custom_tokenizer=self._tokenizer,
+                )
+            )
+            print(
+                f"LLM request path={llm_path} model={self.model} "
+                f"context_tokens={context_tokens}",
+                flush=True,
+            )
+        except Exception:
+            print(
+                f"LLM request path={llm_path} model={self.model} "
+                "context_tokens=failed to get",
+                flush=True,
+            )
+
     def _transport_call(
         self,
         *,
@@ -1128,6 +1157,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         on_token: TokenCallbackType | None = None,
         **kwargs,
     ) -> ModelResponse:
+        self._print_request_context_tokens(messages=messages, llm_path="completion")
         # litellm.modify_params is GLOBAL; guard it for thread-safety
         with self._litellm_modify_params_ctx(self.modify_params):
             with warnings.catch_warnings():
