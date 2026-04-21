@@ -27,7 +27,6 @@ from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.tool import (
     BUILT_IN_TOOL_CLASSES,
     BUILT_IN_TOOLS,
-    FinishTool,
     Tool,
     ToolDefinition,
     resolve_tool,
@@ -214,10 +213,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             }
         ],
     )
-    include_default_finish_tool: bool = Field(
-        default=True,
-        description="Whether to include the default finish tool.",
-    )
     must_call_finish_tool: bool = Field(
         default=False,
         description="Whether to call the finish tool at the end of the conversation.",
@@ -397,13 +392,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 "Auto-attached %s (AgentSkills-format skill present in agent_context)",
                 InvokeSkillTool.__name__,
             )
-        # Fork override: legacy opt-out for FinishTool via include_default_finish_tool.
-        if (
-            not self.include_default_finish_tool
-            and FinishTool.__name__ in default_tool_names
-        ):
-            default_tool_names.remove(FinishTool.__name__)
-
         for tool_name in default_tool_names:
             tool_class = BUILT_IN_TOOL_CLASSES.get(tool_name)
             if tool_class is None:
