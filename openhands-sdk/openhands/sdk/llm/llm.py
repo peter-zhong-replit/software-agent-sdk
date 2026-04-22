@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import time
 import warnings
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
@@ -115,6 +116,26 @@ LLM_RETRY_EXCEPTIONS: Final[tuple[type[Exception], ...]] = (
     InternalServerError,
     LLMNoResponseError,
 )
+
+# Fireworks sometimes returns 200 OK with an empty body (LiteLLM surfaces as
+# APIError "Unable to get json response") or 4xx "service is overloaded / first
+# token deadline" (LiteLLM surfaces as BadRequestError). Neither class is in
+# LLM_RETRY_EXCEPTIONS, so we retry these *message patterns* locally inside
+# _transport_call. Scoped tight to avoid retrying genuine bad requests.
+_FIREWORKS_FLAKE_SUBSTRINGS: Final[tuple[str, ...]] = (
+    "Unable to get json response",
+    "the service is overloaded",
+    "Request didn't generate first token",
+)
+_FIREWORKS_FLAKE_MAX_RETRIES: Final[int] = 10
+_FIREWORKS_FLAKE_BASE_WAIT_S: Final[float] = 4.0
+
+
+def _is_fireworks_flake(exc: BaseException) -> bool:
+    s = str(exc)
+    if "Fireworks_aiException" not in s and "fireworks" not in s.lower():
+        return False
+    return any(pat in s for pat in _FIREWORKS_FLAKE_SUBSTRINGS)
 
 # Minimum context window size required for OpenHands to function properly.
 # Based on typical usage: system prompt (~2k) + conversation history (~4k)
@@ -1186,17 +1207,42 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 api_key_value = self._get_litellm_api_key_value()
 
                 # Some providers need renames handled in _normalize_call_kwargs.
-                ret = litellm_completion(
-                    model=self.model,
-                    api_key=api_key_value,
-                    api_base=self.base_url,
-                    api_version=self.api_version,
-                    timeout=self.timeout,
-                    drop_params=self.drop_params,
-                    seed=self.seed,
-                    messages=messages,
-                    **{**self._aws_kwargs(), **kwargs},
-                )
+                fw_attempts = 0
+                while True:
+                    try:
+                        ret = litellm_completion(
+                            model=self.model,
+                            api_key=api_key_value,
+                            api_base=self.base_url,
+                            api_version=self.api_version,
+                            timeout=self.timeout,
+                            drop_params=self.drop_params,
+                            seed=self.seed,
+                            messages=messages,
+                            **{**self._aws_kwargs(), **kwargs},
+                        )
+                        break
+                    except Exception as fw_exc:
+                        if (
+                            fw_attempts < _FIREWORKS_FLAKE_MAX_RETRIES
+                            and _is_fireworks_flake(fw_exc)
+                        ):
+                            fw_attempts += 1
+                            wait_s = min(
+                                _FIREWORKS_FLAKE_BASE_WAIT_S * (2 ** (fw_attempts - 1)),
+                                30.0,
+                            )
+                            logger.warning(
+                                "Fireworks flake detected (%s/%d): %s. "
+                                "Retrying in %.1fs.",
+                                fw_attempts,
+                                _FIREWORKS_FLAKE_MAX_RETRIES,
+                                str(fw_exc)[:200],
+                                wait_s,
+                            )
+                            time.sleep(wait_s)
+                            continue
+                        raise
                 if enable_streaming and on_token is not None:
                     assert isinstance(ret, CustomStreamWrapper)
                     chunks = []
