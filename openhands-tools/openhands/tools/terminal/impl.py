@@ -428,10 +428,27 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         if action.reset and action.is_input:
             raise ValueError("Cannot use reset=True with is_input=True")
 
-        if self._pool is not None:
+        try:
+            if self._pool is not None:
+                return self._execute_pooled(action, conversation)
+            else:
+                return self._execute_single_session(action, conversation)
+        except Exception as e:
+            if self._pool is None or "no server running" not in str(e).lower():
+                raise
+            logger.warning(f"Tmux server dead: {e}. Recreating pool...")
+            old_pool = self._pool
+            with self._sessions_lock:
+                self._sessions.clear()
+            try:
+                old_pool.close()
+            except Exception:
+                pass
+            self._pool = TmuxPanePool(
+                self._working_dir, self._username, max_panes=old_pool.max_panes
+            )
+            self._pool.initialize()
             return self._execute_pooled(action, conversation)
-        else:
-            return self._execute_single_session(action, conversation)
 
     def close(self) -> None:
         """Close the terminal session and clean up resources."""

@@ -235,6 +235,7 @@ TOOL_DESCRIPTION = f"""Execute a bash command in the terminal within a persisten
 ### Best Practices
 * Directory verification: Before creating new directories or files, first verify the parent directory exists and is the correct location.
 * Directory management: Try to maintain working directory by using absolute paths and avoiding excessive use of `cd`.
+* Do NOT use `exit` in your commands — it will terminate the persistent terminal session and you will lose all output. If you need to preserve an exit code after cleanup commands, use `(exit $STATUS)` (subshell) instead of `exit $STATUS`.
 
 ### Output Handling
 * Output truncation: If the output exceeds a maximum length, it will be truncated before being returned.
