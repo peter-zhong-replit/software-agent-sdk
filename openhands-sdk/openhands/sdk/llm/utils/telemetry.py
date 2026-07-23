@@ -36,6 +36,16 @@ class Telemetry(BaseModel):
     output_cost_per_token: float | None = Field(
         default=None, ge=0, description="Custom Output cost per token (USD)"
     )
+    cache_read_input_token_cost: float | None = Field(
+        default=None,
+        ge=0,
+        description="Custom cached (prompt-cache read) input cost per token (USD)",
+    )
+    cache_write_input_token_cost: float | None = Field(
+        default=None,
+        ge=0,
+        description="Custom cache-creation input cost per token (USD)",
+    )
 
     metrics: Metrics = Field(..., description="Metrics collector instance")
 
@@ -205,13 +215,83 @@ class Telemetry(BaseModel):
             response_id=response_id,
         )
 
+    def _compute_cost_from_custom_pricing(
+        self, resp: ModelResponse | ResponsesAPIResponse
+    ) -> float | None:
+        """Compute cost from usage using the configured custom per-token rates.
+
+        Bills cached prompt-read tokens at ``cache_read_input_token_cost`` and
+        cache-creation tokens at ``cache_write_input_token_cost`` when set.
+        Returns None if usage is unavailable, so the caller can fall back to
+        other cost sources.
+        """
+        if self.input_cost_per_token is None or self.output_cost_per_token is None:
+            return None
+
+        usage = getattr(resp, "usage", None)
+        if usage is None:
+            return None
+
+        prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+
+        # Cached prompt-read tokens live in a couple of possible spots depending
+        # on the provider/LiteLLM version.
+        cache_read = 0
+        details = getattr(usage, "prompt_tokens_details", None)
+        if details is not None:
+            cache_read = int(getattr(details, "cached_tokens", 0) or 0)
+        if not cache_read:
+            cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+        if not cache_read:
+            cache_read = int(getattr(usage, "cached_tokens", 0) or 0)
+        cache_write = int(getattr(usage, "_cache_creation_input_tokens", 0) or 0)
+        if not cache_write:
+            cache_write = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+
+        # Never count more special-priced tokens than prompt tokens.
+        cache_read = max(0, min(cache_read, prompt_tokens))
+        cache_write = max(0, min(cache_write, prompt_tokens - cache_read))
+        regular_prompt = prompt_tokens - cache_read - cache_write
+
+        cache_read_cost = (
+            self.cache_read_input_token_cost
+            if self.cache_read_input_token_cost is not None
+            else self.input_cost_per_token
+        )
+        cache_write_cost = (
+            self.cache_write_input_token_cost
+            if self.cache_write_input_token_cost is not None
+            else self.input_cost_per_token
+        )
+
+        return (
+            regular_prompt * self.input_cost_per_token
+            + cache_read * cache_read_cost
+            + cache_write * cache_write_cost
+            + completion_tokens * self.output_cost_per_token
+        )
+
     def _compute_cost(self, resp: ModelResponse | ResponsesAPIResponse) -> float | None:
-        """Try provider header → litellm direct. Return None on failure."""
+        """Try custom per-token → provider header → litellm direct.
+
+        Return None on failure.
+        """
         extra_kwargs = {}
         if (
             self.input_cost_per_token is not None
             and self.output_cost_per_token is not None
         ):
+            # Compute cost directly from usage so cached-read tokens can be
+            # billed at the discounted rate. LiteLLM's `custom_cost_per_token`
+            # only supports flat input+output pricing, and some provider cost
+            # calculators (e.g. fireworks_ai) ignore cached tokens entirely, so
+            # neither honors a cache-read discount. Doing it here keeps custom
+            # pricing accurate regardless of provider.
+            manual = self._compute_cost_from_custom_pricing(resp)
+            if manual is not None:
+                return manual
+
             cost_per_token = CostPerToken(
                 input_cost_per_token=self.input_cost_per_token,
                 output_cost_per_token=self.output_cost_per_token,

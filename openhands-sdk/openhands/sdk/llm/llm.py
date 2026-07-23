@@ -202,6 +202,24 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ge=0,
         description="The cost per output token. This will available in logs for user.",
     )
+    cache_read_input_token_cost: float | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "The cost per cached (prompt-cache read) input token. When set "
+            "together with input/output costs, cached prompt tokens are billed "
+            "at this discounted rate instead of the full input rate."
+        ),
+    )
+    cache_write_input_token_cost: float | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "The cost per cache-creation input token. When set together with "
+            "input/output costs, prompt-cache write tokens are billed at this "
+            "rate instead of the full input rate."
+        ),
+    )
     ollama_base_url: str | None = Field(default=None)
 
     stream: bool = Field(
@@ -251,11 +269,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "like HuggingFace and Groq."
         ),
     )
-    reasoning_effort: Literal["low", "medium", "high", "xhigh", "none"] | None = Field(
+    reasoning_effort: Literal[
+        "low", "medium", "high", "xhigh", "max", "none"
+    ] | None = Field(
         default="high",
         description="The effort to put into reasoning. "
         "This is a string that can be one of 'low', 'medium', 'high', 'xhigh', "
-        "or 'none'. "
+        "'max', or 'none'. "
         "Can apply to all reasoning models.",
     )
     reasoning_summary: Literal["auto", "concise", "detailed"] | None = Field(
@@ -401,6 +421,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             log_dir=self.log_completions_folder if self.log_completions else None,
             input_cost_per_token=self.input_cost_per_token,
             output_cost_per_token=self.output_cost_per_token,
+            cache_read_input_token_cost=self.cache_read_input_token_cost,
+            cache_write_input_token_cost=self.cache_write_input_token_cost,
             metrics=self._metrics,
         )
 

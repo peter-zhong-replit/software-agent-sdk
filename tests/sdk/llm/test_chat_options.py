@@ -43,6 +43,20 @@ def test_opus_4_5_uses_reasoning_effort_and_strips_temp_top_p():
     assert "top_p" not in out
 
 
+def test_glm_5_2_uses_reasoning_effort_and_strips_temp_top_p():
+    llm = DummyLLM(
+        model="fireworks_ai/accounts/fireworks/models/glm-5p2",
+        top_p=0.9,
+        temperature=0.7,
+        reasoning_effort="max",
+    )
+    out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+
+    assert out.get("reasoning_effort") == "max"
+    assert "temperature" not in out
+    assert "top_p" not in out
+
+
 def test_gpt5_uses_reasoning_effort_and_strips_temp_top_p():
     llm = DummyLLM(
         model="gpt-5-mini-2025-08-07",
