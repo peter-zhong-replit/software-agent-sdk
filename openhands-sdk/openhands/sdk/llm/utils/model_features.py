@@ -69,6 +69,8 @@ REASONING_EFFORT_MODELS: list[str] = [
     "gpt-5",
     # Anthropic Opus 4.5
     "claude-opus-4-5",
+    # Fireworks GLM family
+    "glm-5p",
     # Nova 2 Lite
     "nova-2-lite",
 ]
