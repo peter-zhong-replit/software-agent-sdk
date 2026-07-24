@@ -117,6 +117,10 @@ PROMPT_CACHE_MODELS: list[str] = [
     # model. Without it, prompt caching is silently disabled and every turn
     # re-sends the full (growing) context at full price.
     "claude-fable-5",
+    # Opus 5 (launched 2026-07-23). Needs its own entry: the existing
+    # "claude-opus-4" token is not a substring of "claude-opus-5", so without
+    # this caching would be silently disabled.
+    "claude-opus-5",
 ]
 
 # Models that support a top-level prompt_cache_retention parameter
